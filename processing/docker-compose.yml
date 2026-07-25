@@ -1,6 +1,4 @@
-﻿version: "3.8"
-
-networks:
+﻿networks:
   data_platform:
     external: true
     name: data_platform_network
@@ -22,10 +20,11 @@ services:
     networks:
       - data_platform
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   minio-init:
     image: minio/mc:latest
@@ -70,8 +69,8 @@ services:
       dockerfile: Dockerfile.spark
     container_name: spark-master
     hostname: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     environment:
-      SPARK_MODE: master
       SPARK_MASTER_HOST: spark-master
     ports:
       - "8080:8080"
@@ -88,11 +87,10 @@ services:
       dockerfile: Dockerfile.spark
     container_name: spark-worker-1
     hostname: spark-worker-1
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: 2G
-      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_CORES: "2"
     depends_on:
       - spark-master
     volumes:
