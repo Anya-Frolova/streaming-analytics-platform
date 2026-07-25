@@ -1,0 +1,7 @@
+﻿
+# Project specific
+orchestration/logs/
+processing/spark-logs/
+*.pyc
+__pycache__/
+.env
