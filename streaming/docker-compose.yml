@@ -58,19 +58,6 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        kafka-topics --create --if-not-exists
-          --bootstrap-server kafka:29092
-          --replication-factor 1
-          --partitions 3
-          --topic watch-events &&
-        kafka-topics --create --if-not-exists
-          --bootstrap-server kafka:29092
-          --replication-factor 1
-          --partitions 3
-          --topic ratings-late &&
-        echo 'All topics created'
-      "
+    entrypoint: ["/bin/sh", "-c", "kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --replication-factor 1 --partitions 3 --topic watch-events && kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --replication-factor 1 --partitions 3 --topic ratings-late && echo 'All topics created'"]
     networks:
       - data_platform
