@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY watch_event_producer.py .
 
-CMD ["python", "watch_event_producer.py"]
+CMD ["python", "-u", "watch_event_producer.py"]
