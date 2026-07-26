@@ -5,11 +5,18 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Iceberg runtime + AWS bundle (SDK v2 для S3FileIO)
 RUN curl -fL "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.5.2/iceberg-spark-runtime-3.5_2.12-1.5.2.jar" \
         -o /opt/spark/jars/iceberg-spark-runtime.jar && \
     curl -fL "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.5.2/iceberg-aws-bundle-1.5.2.jar" \
-        -o /opt/spark/jars/iceberg-aws-bundle.jar
+        -o /opt/spark/jars/iceberg-aws-bundle.jar && \
+    curl -fL "https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.12/3.5.0/spark-sql-kafka-0-10_2.12-3.5.0.jar" \
+        -o /opt/spark/jars/spark-sql-kafka.jar && \
+    curl -fL "https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.4.0/kafka-clients-3.4.0.jar" \
+        -o /opt/spark/jars/kafka-clients.jar && \
+    curl -fL "https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.12/3.5.0/spark-token-provider-kafka-0-10_2.12-3.5.0.jar" \
+        -o /opt/spark/jars/spark-token-provider-kafka.jar && \
+    curl -fL "https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar" \
+        -o /opt/spark/jars/commons-pool2.jar
 
 COPY spark-defaults.conf /opt/spark/conf/spark-defaults.conf
 
