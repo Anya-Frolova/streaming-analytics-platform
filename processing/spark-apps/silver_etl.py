@@ -129,11 +129,7 @@ else:
             .withColumn("effective_to",   lit(None).cast(DateType())) \
             .withColumn("is_current",     lit(True)) \
             .withColumn("ingestion_time", current_timestamp()) \
-            .select(col("new.user_id"), col("new.username"), col("new.email"),
-                    col("new.age"), col("new.age_band"), col("new.country"),
-                    col("new.subscription_tier"), col("new.signup_date"),
-                    "user_key", "effective_from", "effective_to",
-                    "is_current", "ingestion_time")
+            .select(col("new.user_id"), col("new.username"), col("new.email"), col("new.age"), col("new.age_band"), col("new.country"), col("new.subscription_tier"), col("new.signup_date"), "user_key", "effective_from", "effective_to", "is_current").withColumn("ingestion_time", current_timestamp())
         new_versions.writeTo("local.silver.dim_user").append()
         print(f"  OK: SCD2 — {changed_count} records updated")
     else:
@@ -257,3 +253,4 @@ else:
 
 print("\nSUCCESS: Bronze -> Silver ETL completed\n")
 spark.stop()
+
