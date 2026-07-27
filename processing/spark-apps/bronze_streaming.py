@@ -1,27 +1,20 @@
 ﻿"""
-Spark Structured Streaming job: reads from Kafka topics and writes to Iceberg bronze layer.
-Run: docker exec spark-master /opt/spark/bin/spark-submit
-     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
-     /opt/spark-apps/bronze_streaming.py
+Spark Structured Streaming: Kafka -> Iceberg bronze.
+Uses foreachBatch with direct writeTo.
 """
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    from_json, col, current_timestamp, to_timestamp
-)
+from pyspark.sql.functions import from_json, col, current_timestamp, to_timestamp
 from pyspark.sql.types import *
 
 spark = SparkSession.builder \
     .appName("BronzeStreaming") \
-    .config("spark.sql.streaming.checkpointLocation", "/tmp/checkpoints") \
     .getOrCreate()
-
 spark.sparkContext.setLogLevel("WARN")
 
 print("\n=== Starting Bronze Streaming Job ===\n")
 
 KAFKA_BOOTSTRAP = "kafka:29092"
 
-# ── Watch Events Schema ──────────────────────────────────────────────────────
 watch_schema = StructType([
     StructField("event_id",               StringType(),  True),
     StructField("user_id",                StringType(),  True),
@@ -31,64 +24,67 @@ watch_schema = StructType([
     StructField("session_id",             StringType(),  True),
     StructField("watch_duration_seconds", IntegerType(), True),
     StructField("event_time",             StringType(),  True),
-    StructField("ingestion_time",         StringType(),  True),
 ])
 
-# ── Ratings Schema ───────────────────────────────────────────────────────────
 ratings_schema = StructType([
-    StructField("rating_id",      StringType(),  True),
-    StructField("user_id",        StringType(),  True),
-    StructField("content_id",     StringType(),  True),
-    StructField("rating_value",   IntegerType(), True),
-    StructField("event_time",     StringType(),  True),
-    StructField("ingestion_time", StringType(),  True),
+    StructField("rating_id",    StringType(),  True),
+    StructField("user_id",      StringType(),  True),
+    StructField("content_id",   StringType(),  True),
+    StructField("rating_value", IntegerType(), True),
+    StructField("event_time",   StringType(),  True),
 ])
 
-# ── Read watch-events from Kafka ─────────────────────────────────────────────
+def write_watch_batch(batch_df, batch_id):
+    count = batch_df.count()
+    if count == 0:
+        print(f"  Batch {batch_id}: no watch events")
+        return
+    processed = batch_df \
+        .withColumn("event_time",     to_timestamp(col("event_time"))) \
+        .withColumn("ingestion_time", current_timestamp())
+    processed.writeTo("local.bronze.watch_events").append()
+    print(f"  Batch {batch_id}: wrote {count} watch events -> bronze.watch_events")
+
+def write_ratings_batch(batch_df, batch_id):
+    count = batch_df.count()
+    if count == 0:
+        print(f"  Batch {batch_id}: no ratings")
+        return
+    processed = batch_df \
+        .withColumn("event_time",     to_timestamp(col("event_time"))) \
+        .withColumn("ingestion_time", current_timestamp())
+    processed.writeTo("local.bronze.ratings_late").append()
+    print(f"  Batch {batch_id}: wrote {count} ratings -> bronze.ratings_late")
+
 watch_raw = spark.readStream \
     .format("kafka") \
     .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
     .option("subscribe", "watch-events") \
     .option("startingOffsets", "latest") \
     .option("failOnDataLoss", "false") \
-    .load()
+    .load() \
+    .select(from_json(col("value").cast("string"), watch_schema).alias("d")) \
+    .select("d.*")
 
-watch_df = watch_raw \
-    .select(from_json(col("value").cast("string"), watch_schema).alias("data")) \
-    .select("data.*") \
-    .withColumn("event_time",     to_timestamp(col("event_time"))) \
-    .withColumn("ingestion_time", current_timestamp())
-
-# ── Read ratings-late from Kafka ─────────────────────────────────────────────
 ratings_raw = spark.readStream \
     .format("kafka") \
     .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
     .option("subscribe", "ratings-late") \
     .option("startingOffsets", "latest") \
     .option("failOnDataLoss", "false") \
-    .load()
+    .load() \
+    .select(from_json(col("value").cast("string"), ratings_schema).alias("d")) \
+    .select("d.*")
 
-ratings_df = ratings_raw \
-    .select(from_json(col("value").cast("string"), ratings_schema).alias("data")) \
-    .select("data.*") \
-    .withColumn("event_time",     to_timestamp(col("event_time"))) \
-    .withColumn("ingestion_time", current_timestamp())
-
-# ── Write watch-events to Iceberg bronze ─────────────────────────────────────
-watch_query = watch_df.writeStream \
-    .format("iceberg") \
-    .outputMode("append") \
+watch_query = watch_raw.writeStream \
+    .foreachBatch(write_watch_batch) \
     .trigger(processingTime="30 seconds") \
-    .option("path", "local.bronze.watch_events") \
     .option("checkpointLocation", "/tmp/checkpoints/watch_events") \
     .start()
 
-# ── Write ratings to Iceberg bronze ──────────────────────────────────────────
-ratings_query = ratings_df.writeStream \
-    .format("iceberg") \
-    .outputMode("append") \
+ratings_query = ratings_raw.writeStream \
+    .foreachBatch(write_ratings_batch) \
     .trigger(processingTime="30 seconds") \
-    .option("path", "local.bronze.ratings_late") \
     .option("checkpointLocation", "/tmp/checkpoints/ratings_late") \
     .start()
 
