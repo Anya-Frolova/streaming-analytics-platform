@@ -23,8 +23,6 @@ x-airflow-common: &airflow-common
     - /var/run/docker.sock:/var/run/docker.sock
   networks:
     - data_platform
-  depends_on:
-    - airflow-postgres
 
 services:
 
@@ -69,16 +67,16 @@ services:
     ports:
       - "8085:8080"
     depends_on:
-      airflow-postgres:
-        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
 
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow-scheduler
     command: scheduler
     depends_on:
-      airflow-postgres:
-        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
