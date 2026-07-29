@@ -120,6 +120,7 @@ services:
     depends_on:
       - spark-master
       - spark-worker-1
+      - iceberg-rest
     volumes:
       - ./spark-apps:/opt/spark-apps
     networks:
@@ -154,3 +155,4 @@ services:
 
 volumes:
   minio_data:
+
