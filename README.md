@@ -48,3 +48,12 @@ cd ../orchestration && docker compose down
 Bronze - bronze/ - Raw ingested data
 Silver - silver/ - Cleaned and transformed data
 Gold   - gold/   - Aggregated data for BI and ML
+
+## Project Videos
+
+- **Presentation Video**: https://drive.google.com/file/d/173GnpOLYGCdsrm5O7LZi_Td6eJcnRN5G/view
+- **Demo Video**: https://drive.google.com/file/d/1AxSumQYmmIlwKoa0Lee3LQ9pErB_ANTL/view
+
+## Service URL
+
+Airflow UI - http://localhost:8085 - login: admin Password: admin
