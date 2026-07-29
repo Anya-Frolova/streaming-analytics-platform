@@ -3,7 +3,7 @@ from pyspark.sql.functions import (
     col, current_timestamp, lit, when,
     sum as spark_sum, avg, count, countDistinct,
     round as spark_round, datediff, to_date,
-    max as spark_max, expr, date_sub
+    max as spark_max, expr
 )
 from pyspark.sql.window import Window
 
@@ -35,16 +35,11 @@ watch_sessions = spark.table("local.silver.watch_sessions")
 dim_user = spark.table("local.silver.dim_user").filter(col("is_current") == True)
 existing_fact = spark.table("local.gold.fact_watch_sessions")
 
-# Incremental: only new sessions
-if existing_fact.count() == 0:
-    max_fact_ingestion = None
-else:
-    max_fact_ingestion = existing_fact.agg({"ingestion_time": "max"}).collect()[0][0]
+max_fact_ingestion = existing_fact.agg({"ingestion_time": "max"}).collect()[0][0] \
+    if existing_fact.count() > 0 else None
 
-if max_fact_ingestion is None:
-    new_sessions = watch_sessions
-else:
-    new_sessions = watch_sessions.filter(col("ingestion_time") > lit(max_fact_ingestion))
+new_sessions = watch_sessions if max_fact_ingestion is None \
+    else watch_sessions.filter(col("ingestion_time") > lit(max_fact_ingestion))
 
 new_s_count = new_sessions.count()
 if new_s_count > 0:
@@ -63,7 +58,7 @@ else:
 fact = spark.table("local.gold.fact_watch_sessions")
 print(f"  fact_watch_sessions total: {fact.count()} rows")
 
-# ── daily_engagement — always recalculate ────────────────────────────────
+# ── daily_engagement ─────────────────────────────────────────────────────
 print("\n--- daily_engagement ---")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS local.gold.daily_engagement (
@@ -97,7 +92,7 @@ if fact.count() > 0:
     print(f"  OK: daily_engagement — {daily.count()} rows")
     daily.orderBy("date").show(5)
 
-# ── churn_features — with real 7d rolling window + new fields ────────────
+# ── churn_features — FIXED rolling window ────────────────────────────────
 print("\n--- churn_features ---")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS local.gold.churn_features (
@@ -131,14 +126,12 @@ if fact.count() > 0:
     dim_user_full = spark.table("local.silver.dim_user").filter(col("is_current")==True)
     dim_content   = spark.table("local.silver.dim_content")
 
-    # Preferred device per user per day
     preferred_device = fact \
         .groupBy("user_id","event_date","device_type") \
         .agg(count("session_id").alias("dc")) \
         .groupBy("user_id","event_date") \
         .agg(expr("max_by(device_type, dc)").alias("preferred_device"))
 
-    # Favorite genre per user per day
     favorite_genre = fact \
         .join(dim_content.select("content_id","genre"), "content_id", "left") \
         .groupBy("user_id","event_date","genre") \
@@ -146,7 +139,6 @@ if fact.count() > 0:
         .groupBy("user_id","event_date") \
         .agg(expr("max_by(genre, gc)").alias("favorite_genre"))
 
-    # Daily aggregations per user
     daily_user = fact \
         .join(dim_user_full.select("user_id","age_band","subscription_tier","country","signup_date"), "user_id", "left") \
         .join(preferred_device, ["user_id","event_date"], "left") \
@@ -169,20 +161,17 @@ if fact.count() > 0:
             datediff(col("event_date"), to_date(col("signup_date")))) \
         .withColumnRenamed("event_date","date")
 
-    # Real 7-day rolling window
-    days_7  = 7  * 24 * 60 * 60  # seconds
-    days_30 = 30 * 24 * 60 * 60
-
+    # FIX: date.cast("long") = epoch DAYS, so rangeBetween uses DAYS not seconds
     w7  = Window.partitionBy("user_id") \
         .orderBy(col("date").cast("long")) \
-        .rangeBetween(-days_7,  0)
+        .rangeBetween(-7, 0)   # 7 days
     w30 = Window.partitionBy("user_id") \
         .orderBy(col("date").cast("long")) \
-        .rangeBetween(-days_30, 0)
+        .rangeBetween(-30, 0)  # 30 days
 
     churn = daily_user \
         .withColumn("sessions_7d",
-            count("sessions_count").over(w7)) \
+            spark_sum("sessions_count").over(w7)) \
         .withColumn("watch_hours_7d",
             spark_round(spark_sum("total_watch_hours").over(w7), 3)) \
         .withColumn("watch_time_30d",
