@@ -1,50 +1,82 @@
 ﻿from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, current_timestamp, lit, when, sum as spark_sum, avg, count, countDistinct, round as spark_round, datediff, to_date, max as spark_max, expr
+from pyspark.sql.functions import (
+    col, current_timestamp, lit, when,
+    sum as spark_sum, avg, count, countDistinct,
+    round as spark_round, datediff, to_date,
+    max as spark_max, expr, date_sub
+)
+from pyspark.sql.window import Window
 
 spark = SparkSession.builder.appName("GoldETL").getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
 print("\n=== Silver -> Gold ETL ===\n")
 spark.sql("CREATE NAMESPACE IF NOT EXISTS local.gold")
 
-# fact_watch_sessions
-print("--- fact_watch_sessions ---")
+# ── fact_watch_sessions — INCREMENTAL ────────────────────────────────────
+print("--- fact_watch_sessions (incremental) ---")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS local.gold.fact_watch_sessions (
-        session_id STRING, user_key BIGINT, user_id STRING,
-        content_id STRING, event_type STRING, device_type STRING,
-        watch_duration_seconds INT, completion_percent DOUBLE,
-        is_late_arrival BOOLEAN, event_date DATE,
-        event_time TIMESTAMP, ingestion_time TIMESTAMP
+        session_id             STRING,
+        user_key               BIGINT,
+        user_id                STRING,
+        content_id             STRING,
+        event_type             STRING,
+        device_type            STRING,
+        watch_duration_seconds INT,
+        completion_percent     DOUBLE,
+        is_late_arrival        BOOLEAN,
+        event_date             DATE,
+        event_time             TIMESTAMP,
+        ingestion_time         TIMESTAMP
     ) USING iceberg TBLPROPERTIES ('format-version'='2')
 """)
 
 watch_sessions = spark.table("local.silver.watch_sessions")
-dim_user = spark.table("local.silver.dim_user").filter(col("is_current")==True)
+dim_user = spark.table("local.silver.dim_user").filter(col("is_current") == True)
+existing_fact = spark.table("local.gold.fact_watch_sessions")
 
-if spark.table("local.gold.fact_watch_sessions").count() == 0 and watch_sessions.count() > 0:
-    fact = watch_sessions \
+# Incremental: only new sessions
+if existing_fact.count() == 0:
+    max_fact_ingestion = None
+else:
+    max_fact_ingestion = existing_fact.agg({"ingestion_time": "max"}).collect()[0][0]
+
+if max_fact_ingestion is None:
+    new_sessions = watch_sessions
+else:
+    new_sessions = watch_sessions.filter(col("ingestion_time") > lit(max_fact_ingestion))
+
+new_s_count = new_sessions.count()
+if new_s_count > 0:
+    new_fact = new_sessions \
         .join(dim_user.select("user_id","user_key"), "user_id", "left") \
         .withColumn("event_date",     to_date(col("event_time"))) \
         .withColumn("ingestion_time", current_timestamp()) \
         .select("session_id","user_key","user_id","content_id","event_type",
                 "device_type","watch_duration_seconds","completion_percent",
                 "is_late_arrival","event_date","event_time","ingestion_time")
-    fact.writeTo("local.gold.fact_watch_sessions").append()
-    print(f"  OK: fact_watch_sessions — {fact.count()} rows")
+    new_fact.writeTo("local.gold.fact_watch_sessions").append()
+    print(f"  OK: added {new_s_count} new fact rows")
 else:
-    fact = spark.table("local.gold.fact_watch_sessions")
-    print(f"  OK: fact_watch_sessions — {fact.count()} rows")
+    print(f"  OK: no new sessions to process")
 
 fact = spark.table("local.gold.fact_watch_sessions")
+print(f"  fact_watch_sessions total: {fact.count()} rows")
 
-# daily_engagement
+# ── daily_engagement — always recalculate ────────────────────────────────
 print("\n--- daily_engagement ---")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS local.gold.daily_engagement (
-        date DATE, total_users BIGINT, total_sessions BIGINT,
-        total_watch_hours DOUBLE, avg_watch_time_minutes DOUBLE,
-        avg_completion_rate DOUBLE, total_play_events BIGINT,
-        total_finish_events BIGINT, finish_rate DOUBLE, ingestion_time TIMESTAMP
+        date                   DATE,
+        total_users            BIGINT,
+        total_sessions         BIGINT,
+        total_watch_hours      DOUBLE,
+        avg_watch_time_minutes DOUBLE,
+        avg_completion_rate    DOUBLE,
+        total_play_events      BIGINT,
+        total_finish_events    BIGINT,
+        finish_rate            DOUBLE,
+        ingestion_time         TIMESTAMP
     ) USING iceberg TBLPROPERTIES ('format-version'='2')
 """)
 
@@ -64,37 +96,62 @@ if fact.count() > 0:
     daily.writeTo("local.gold.daily_engagement").overwritePartitions()
     print(f"  OK: daily_engagement — {daily.count()} rows")
     daily.orderBy("date").show(5)
-else:
-    print("  INFO: no data yet")
 
-# churn_features
+# ── churn_features — with real 7d rolling window + new fields ────────────
 print("\n--- churn_features ---")
 spark.sql("""
     CREATE TABLE IF NOT EXISTS local.gold.churn_features (
-        date DATE, user_id STRING, age_band STRING,
-        subscription_tier STRING, country STRING,
-        days_since_signup INT, sessions_count BIGINT,
-        total_watch_hours DOUBLE, avg_completion_rate DOUBLE,
-        finish_rate DOUBLE, play_count BIGINT, pause_count BIGINT,
-        stop_count BIGINT, finish_count BIGINT,
-        unique_content_watched BIGINT, sessions_7d BIGINT,
-        watch_hours_7d DOUBLE, preferred_device STRING,
-        late_arrival_count BIGINT, ingestion_time TIMESTAMP
+        date                   DATE,
+        user_id                STRING,
+        age_band               STRING,
+        subscription_tier      STRING,
+        country                STRING,
+        days_since_signup      INT,
+        sessions_count         BIGINT,
+        total_watch_hours      DOUBLE,
+        watch_time_30d         DOUBLE,
+        avg_completion_rate    DOUBLE,
+        finish_rate            DOUBLE,
+        play_count             BIGINT,
+        pause_count            BIGINT,
+        stop_count             BIGINT,
+        finish_count           BIGINT,
+        unique_content_watched BIGINT,
+        sessions_7d            BIGINT,
+        watch_hours_7d         DOUBLE,
+        favorite_genre         STRING,
+        preferred_device       STRING,
+        late_arrival_count     BIGINT,
+        churn_label            INT,
+        ingestion_time         TIMESTAMP
     ) USING iceberg TBLPROPERTIES ('format-version'='2')
 """)
 
 if fact.count() > 0:
     dim_user_full = spark.table("local.silver.dim_user").filter(col("is_current")==True)
+    dim_content   = spark.table("local.silver.dim_content")
+
+    # Preferred device per user per day
     preferred_device = fact \
         .groupBy("user_id","event_date","device_type") \
         .agg(count("session_id").alias("dc")) \
         .groupBy("user_id","event_date") \
         .agg(expr("max_by(device_type, dc)").alias("preferred_device"))
 
-    churn = fact \
+    # Favorite genre per user per day
+    favorite_genre = fact \
+        .join(dim_content.select("content_id","genre"), "content_id", "left") \
+        .groupBy("user_id","event_date","genre") \
+        .agg(count("session_id").alias("gc")) \
+        .groupBy("user_id","event_date") \
+        .agg(expr("max_by(genre, gc)").alias("favorite_genre"))
+
+    # Daily aggregations per user
+    daily_user = fact \
         .join(dim_user_full.select("user_id","age_band","subscription_tier","country","signup_date"), "user_id", "left") \
         .join(preferred_device, ["user_id","event_date"], "left") \
-        .groupBy("event_date","user_id","age_band","subscription_tier","country","signup_date","preferred_device") \
+        .join(favorite_genre,   ["user_id","event_date"], "left") \
+        .groupBy("event_date","user_id","age_band","subscription_tier","country","signup_date","preferred_device","favorite_genre") \
         .agg(
             count("session_id").alias("sessions_count"),
             spark_round(spark_sum("watch_duration_seconds")/3600,3).alias("total_watch_hours"),
@@ -105,24 +162,47 @@ if fact.count() > 0:
             count(when(col("event_type")=="finish",True)).alias("finish_count"),
             countDistinct("content_id").alias("unique_content_watched"),
             count(when(col("is_late_arrival")==True,True)).alias("late_arrival_count"),
-            count("session_id").alias("sessions_7d"),
-            spark_round(spark_sum("watch_duration_seconds")/3600,3).alias("watch_hours_7d"),
         ) \
-        .withColumn("finish_rate", spark_round(col("finish_count")/col("sessions_count")*100,2)) \
-        .withColumn("days_since_signup", datediff(col("event_date"), to_date(col("signup_date")))) \
+        .withColumn("finish_rate",
+            spark_round(col("finish_count")/col("sessions_count")*100,2)) \
+        .withColumn("days_since_signup",
+            datediff(col("event_date"), to_date(col("signup_date")))) \
+        .withColumnRenamed("event_date","date")
+
+    # Real 7-day rolling window
+    days_7  = 7  * 24 * 60 * 60  # seconds
+    days_30 = 30 * 24 * 60 * 60
+
+    w7  = Window.partitionBy("user_id") \
+        .orderBy(col("date").cast("long")) \
+        .rangeBetween(-days_7,  0)
+    w30 = Window.partitionBy("user_id") \
+        .orderBy(col("date").cast("long")) \
+        .rangeBetween(-days_30, 0)
+
+    churn = daily_user \
+        .withColumn("sessions_7d",
+            count("sessions_count").over(w7)) \
+        .withColumn("watch_hours_7d",
+            spark_round(spark_sum("total_watch_hours").over(w7), 3)) \
+        .withColumn("watch_time_30d",
+            spark_round(spark_sum("total_watch_hours").over(w30), 3)) \
+        .withColumn("churn_label",
+            when(col("finish_rate") < 10, 1)
+            .when((col("sessions_count") <= 1) & (col("days_since_signup") > 30), 1)
+            .otherwise(0)) \
         .withColumn("ingestion_time", current_timestamp()) \
-        .withColumnRenamed("event_date","date") \
         .select("date","user_id","age_band","subscription_tier","country",
                 "days_since_signup","sessions_count","total_watch_hours",
-                "avg_completion_rate","finish_rate","play_count","pause_count",
-                "stop_count","finish_count","unique_content_watched",
-                "sessions_7d","watch_hours_7d","preferred_device",
-                "late_arrival_count","ingestion_time")
+                "watch_time_30d","avg_completion_rate","finish_rate",
+                "play_count","pause_count","stop_count","finish_count",
+                "unique_content_watched","sessions_7d","watch_hours_7d",
+                "favorite_genre","preferred_device","late_arrival_count",
+                "churn_label","ingestion_time")
+
     churn.writeTo("local.gold.churn_features").overwritePartitions()
     print(f"  OK: churn_features — {churn.count()} rows")
     churn.show(3)
-else:
-    print("  INFO: no data yet")
 
 print("\nSUCCESS: Silver -> Gold ETL completed\n")
 spark.stop()
