@@ -90,7 +90,7 @@ watch patterns, device preferences, late arrival counts.
 | stop_count | BIGINT | Count of `event_type = 'stop'` that day |
 | finish_count | BIGINT | Count of `event_type = 'finish'` that day |
 | unique_content_watched | BIGINT | Distinct `content_id` count for the user that day |
-| sessions_7d | BIGINT | Rolling window over the trailing 7 days (`rangeBetween(-7d, 0)`) — counts the number of active days for the user in that window, not the total session count |
+| sessions_7d | BIGINT | Rolling sum of `sessions_count` over the trailing 7 days (window function, `rangeBetween(-7, 0)` on the date cast to epoch days) |
 | watch_hours_7d | DOUBLE | Rolling sum of `total_watch_hours` over the trailing 7 days |
 | favorite_genre | STRING | Genre with the most sessions for the user that day (`max_by(genre, count)`, joined via `silver.dim_content`) |
 | preferred_device | STRING | Device with the most sessions for the user that day (`max_by(device_type, count)`) |

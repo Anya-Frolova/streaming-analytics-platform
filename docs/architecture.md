@@ -12,7 +12,7 @@ flowchart LR
     BS --> BWE[("bronze.watch_events")]
     BS --> BRL[("bronze.ratings_late")]
 
-    BSD["bronze_seed_data.py<br/>(batch seed)"] --> BU[("bronze.users")]
+    BSD["bronze_seed_data.py<br/>bronze-seed-init container"] --> BU[("bronze.users")]
     BSD --> BCC[("bronze.content_catalog")]
 
     BWE --> SE["silver_etl.py<br/>(incremental)"]
@@ -45,7 +45,7 @@ flowchart LR
 
 
 - **Real-time path**: `watch-producer` publishes to Kafka topics `watch-events` and `ratings-late`. `bronze_streaming.py` consumes both via Spark Structured Streaming (`foreachBatch`, 30-second trigger) and appends to `bronze.watch_events` / `bronze.ratings_late`. It runs as the `spark-streaming` service in `processing/docker-compose.yml` and starts automatically with `docker compose up`.
-- **Batch seed path**: `bronze_seed_data.py` generates `bronze.users` and `bronze.content_catalog` directly (no Kafka involved).
+- **Batch seed path**: `bronze_seed_data.py` generates `bronze.users` and `bronze.content_catalog` directly (no Kafka involved; idempotent, skips if already loaded). It runs automatically as the `bronze-seed-init` container in `processing/docker-compose.yml`, which `spark-streaming` waits on (`service_completed_successfully`) before it starts. Airflow's `batch_pipeline` also runs it daily as a no-op safety check.
 - **Bronze → Silver** (`silver_etl.py`, incremental): runs null/duplicate checks on `bronze.users`, `bronze.content_catalog`, and `bronze.watch_events`. Writes `silver.dim_user` (SCD Type 2 — detects `subscription_tier`/`country` changes, expires the old row, inserts a new version), `silver.dim_content`, `silver.dim_time` (calendar attributes per distinct event date), `silver.dim_device` (device category lookup), `silver.watch_sessions` (only rows newer than the last run's max `ingestion_time`; `completion_percent` is computed from the actual content length via a join to `silver.dim_content`, falling back to a 60-minute assumption if the content isn't found), and `silver.ratings` (also incremental, tagged `is_within_48h`).
 - **Silver → Gold** (`gold_etl.py`, incremental): `gold.fact_watch_sessions` only processes sessions newer than its last run and joins them to the current `silver.dim_user` rows for `user_key`. `gold.daily_engagement` and `gold.churn_features` are fully recalculated from `fact_watch_sessions` on every run.
 - **Orchestration**: Airflow DAG `batch_pipeline` (`0 2 * * *`) runs `bronze_seed_data.py` → `silver_etl.py` → `gold_etl.py` → a `quality_gate` check, daily. DAG `streaming_pipeline` (`*/30 * * * *`) checks that the `watch-producer` container is running, then re-runs `silver_etl.py` and `gold_etl.py` to pick up newly streamed data.
